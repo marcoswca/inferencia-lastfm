@@ -1,0 +1,197 @@
+---
+title: "Implementando ICs"
+author: "Marcos Arruda"
+output:
+  html_document:
+    theme: readable
+    df_print: paged
+    toc: yes
+  html_notebook:
+    fig_width: 7
+    theme: readable
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(broom)
+library(boot)
+library(gridExtra)
+theme_set(theme_bw())
+```
+
+## Os dados
+
+```{r}
+set.seed(12345)
+
+lastfm = read_csv(here::here("data/experimento-lastfm.csv"), 
+                  col_types = cols(.default = col_double(), 
+                                   user = col_character()))
+
+lastfm = lastfm %>% 
+  sample_n(300) %>% 
+  select(news, old, mediana_pop)
+
+glimpse(lastfm)
+```
+
+## Proporção de artistas novos e popularidade
+
+Utilizaremos ICs para estimar duas métricas sobre os usuários do LastFM em geral durante um período de 6 meses. Em ambos os casos faremos isso a partir de uma amostra de 300 usuários. As duas métricas são: 
+
+1. Qual a proporção de novos artistas em geral escutada por usuários?
+
+```{r}
+set.seed(1212)
+lastfm <- lastfm %>% 
+    mutate(prop_news = news / (news + old))
+
+theta_c = mean(lastfm$prop_news)
+
+repeticoes = 5000 # pelo menos 2000, mas mais não faz mal.
+
+um_bootstrap <- function(x){
+  prop_news = x %>% pull(prop_news)
+  boot_x <- sample(prop_news,           # amostre dos dados
+                   size = NROW(prop_news), # tamanho igual ao recebido
+                   replace = TRUE) # aqui é o bootstrap
+  return(mean(boot_x))
+}
+
+# A REAMOSTRAGEM
+reamostragens = tibble(i = 1:repeticoes) %>% 
+  mutate(theta_c_s = map_dbl(i, ~ um_bootstrap(lastfm)))
+
+ci_amostragens = reamostragens %>% 
+  mutate(conf.low = theta_c + quantile((theta_c_s - theta_c), .05), 
+         conf.high = theta_c + quantile((theta_c_s - theta_c), .95), 
+         statistic = theta_c)
+```
+
+```{r}
+funcao_theta_boot = function(df, i) {
+  df %>%
+    slice(i) %>% 
+    pull(prop_news) %>%
+    mean()
+}
+
+booted <- boot(data = lastfm, 
+               statistic = funcao_theta_boot, 
+               R = 5000)
+
+ci_boot = tidy(booted, 
+          conf.level = .95,
+          conf.method = "bca",
+          conf.int = TRUE) %>% 
+    select(conf.low, statistic, conf.high)
+```
+
+```{r}
+p1 = ci_amostragens %>%
+    ggplot(aes(
+        x = "",
+        y = statistic,
+        ymin = conf.low,
+        ymax = conf.high
+    )) +
+    geom_pointrange() +
+    geom_point(size = 3) + 
+    labs(x = "Código", 
+         y = "Proporção de novos artistas") + 
+    ylim(.235, .265)
+
+p2 = ci_boot %>%
+    ggplot(aes(
+        x = "",
+        y = statistic,
+        ymin = conf.low,
+        ymax = conf.high
+    )) +
+    geom_pointrange() +
+    geom_point(size = 3) + 
+    labs(x = "Bootstrap", 
+         y = "Proporção de novos artistas") + 
+    ylim(.235, .265)
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+Podemos dizer, de acordo com os intervalos de confiaça, que um usuário escuta novos artistas em uma proporção estimada no intervalo de `[0.2375909 ; 0.2483568]`, de acordo com o código implementado. Ao utilizar a lib boot obtemos o intervalo `[0.2359994 ; 0.2623365]`. O intervalo obtido pelo código implementado possui um intervalo menor, mas os dois resultados concordam já que um intervalo está contido no outro. 
+
+2. Para os usuários que gostam muito de música pop (mediana_pop > 5), qual a correlação entre a popularidade mediana dos artistas escutado e a proporção dos artistas escutados que eram novos. 
+
+```{r}
+lastfm <-  lastfm %>% 
+  filter(mediana_pop > 5) 
+
+theta_cor <- cor(lastfm$mediana_pop, lastfm$prop_news, method = "pearson")
+
+bootstrap_cor <- function(x){
+  boot_x <- sample(x,              # amostre dos dados
+                   size = NROW(x), # tamanho igual ao recebido
+                   replace = TRUE) # aqui é o bootstrap
+  return(cor(boot_x$mediana_pop, boot_x$prop_news, method = "pearson"))
+}
+
+# A REAMOSTRAGEM
+reamostragens_cor = tibble(i = 1:repeticoes) %>% 
+  mutate(theta_cor_s = map_dbl(i, ~ bootstrap_cor(lastfm)))
+
+ci_amostragens_cor = reamostragens_cor %>% 
+  mutate(conf.low = theta_cor + quantile((theta_cor_s - theta_cor), .05), 
+         conf.high = theta_cor + quantile((theta_cor_s - theta_cor), .95), 
+         statistic = theta_cor) 
+
+```
+
+```{r}
+funcao_theta_cor_boot = function(df, i) {
+  df <- df %>% slice(i) 
+  cor(df$mediana_pop, df$prop_news, method = "pearson")
+}
+
+booted_cor <- boot(data = lastfm, 
+               statistic = funcao_theta_cor_boot, 
+               R = 5000)
+
+ci_boot_cor = tidy(booted_cor, 
+          conf.level = .95,
+          conf.method = "bca",
+          conf.int = TRUE) %>% 
+    select(conf.low, statistic, conf.high)
+
+```
+
+```{r}
+p1_cor = ci_amostragens_cor %>%
+    ggplot(aes(
+        x = "",
+        y = statistic,
+        ymin = conf.low,
+        ymax = conf.high
+    )) +
+    geom_pointrange() +
+    geom_point(size = 3) + 
+    labs(x = "Código", 
+         y = "Correlação")
+
+p2_cor = ci_boot_cor %>%
+    ggplot(aes(
+        x = "",
+        y = statistic,
+        ymin = conf.low,
+        ymax = conf.high
+    )) +
+    geom_pointrange() +
+    geom_point(size = 3) + 
+    labs(x = "Bootstrap", 
+         y = "")
+
+grid.arrange(p1_cor, p2_cor, ncol = 2)
+```
+
+De acordo com os intervalos de confiança estimados para a correlação entre popularidade dos artistas e proporção de artistas novos que um usuário escutou, o intervalo gerado pelo código implementado possui um intervalo muito pequeno que nem aparece no gráfico. O intervalo gerado pela lib boot foi de `[-0.2247701 ; 0.04996495]`, os intervalos dos dois métodos concordam mais uma vez, assim podemos dizer que não existe correlação linear entre a popularidade dos artista que um usuário escuta com a proporção deste em ouvir novos usuários.
